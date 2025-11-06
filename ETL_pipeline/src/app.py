@@ -2,7 +2,6 @@
 import glob
 from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
-
 import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
@@ -10,6 +9,7 @@ from streamlit_autorefresh import st_autorefresh
 RAW_ROOT = Path("data/raw")
 MART_ROOT = Path("data/marts")
 ENGINE = "fastparquet"
+RAW_ROOT.mkdir(parents=True, exist_ok=True)
 
 st.set_page_config(page_title="Beer Production KPIs", layout="wide")
 
@@ -156,30 +156,150 @@ else:
         with m3:
             st.metric(
                 "OOS rate (last minute)",
-                f"{(latest_row['oos_rate']*100):.1f}%"
+		f"{(latest_row['oos_rate']*100):.1f}%"
                 if latest_row is not None
                 else "—",
             )
 
-        left, right = st.columns((2, 1))
-        with left:
-            st.subheader("Mean value over time")
-            if not kpi_sel.empty:
-                chart_df = kpi_sel.set_index("minute")[["mean_value"]]
-                st.line_chart(chart_df)
-            else:
-                st.info("No KPI rows yet for this filter.")
-        with right:
-            st.subheader("OOS rate over time")
-            if not kpi_sel.empty:
-                chart_df2 = kpi_sel.set_index("minute")[["oos_rate"]]
-                st.line_chart(chart_df2)
-            else:
-                st.info("No KPI rows yet for this filter.")
 
-        st.subheader("Latest raw readings")
-        tail = df_sel.sort_values("ts").tail(50)
-        cols = [
+#Helper func for Historical trends
+@st.cache_data(ttl=10, show_spinner=False)
+def load_parts_for(day_iso: str):
+    import glob
+    parts = sorted((RAW_ROOT / f"date={day_iso}").glob("*.parquet"))
+    if not parts:
+        return None
+    df = pd.concat([pd.read_parquet(p, engine=ENGINE) for p in parts], ignore_index=True)
+    # normalize
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    df = df.dropna(subset=["ts"])
+    if "sensor" not in df.columns and "param" in df.columns:
+        df = df.rename(columns={"param": "sensor"})
+    # types
+    df["in_spec"] = df["in_spec"].astype(bool)
+    df["value"]  = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["value"])
+    return df
+
+
+# ---- Historical Trends ----
+st.header("📈 Historical Trends")
+
+end_date = st.date_input("End date", value=date.today(), key="trend_end")
+days_back = st.slider("Days back", 1, 14, 7, key="trend_window")
+
+frames = []
+for i in range(days_back):
+    d = (pd.to_datetime(end_date) - pd.Timedelta(days=i)).date().isoformat()
+    df = load_parts_for(d)
+    if df is not None and not df.empty:
+        df["day"] = pd.to_datetime(d).date()
+        frames.append(df)
+
+if not frames:
+    st.info("No data found in the selected window.")
+else:
+    hist = pd.concat(frames, ignore_index=True)
+
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        plant_t = st.selectbox("Plant", sorted(hist["plant_id"].dropna().unique()))
+    with c2:
+        line_t = st.selectbox("Line", sorted(hist["line_id"].dropna().unique()))
+    with c3:
+        step_t = st.selectbox("Step", sorted(hist["step"].dropna().unique()))
+    with c4:
+        sensor_t = st.selectbox("Sensor", sorted(hist[hist["step"]==step_t]["sensor"].dropna().unique()))
+
+    hist_sel = hist.query(
+        "plant_id == @plant_t and line_id == @line_t and step == @step_t and sensor == @sensor_t"
+    ).copy()
+
+    if hist_sel.empty:
+        st.warning("No rows after applying filters.")
+    else:
+        daily = (hist_sel.groupby(["day","plant_id","line_id","step","sensor"])
+                 .agg(readings=("value","count"),
+                      in_spec_rate=("in_spec","mean"),
+                      avg_value=("value","mean"))
+                 .reset_index()
+                 .sort_values("day"))
+
+        m1, m2 = st.columns(2)
+        with m1:
+            st.subheader("In-spec rate by day")
+            st.line_chart(daily.set_index("day")[["in_spec_rate"]])
+        with m2:
+            st.subheader("Average value by day")
+            st.line_chart(daily.set_index("day")[["avg_value"]])
+
+        st.subheader("Daily breakdown")
+        st.dataframe(daily, use_container_width=True, height=320)# ---- Summary KPIs (today) ----
+
+st.header("🧪 Process Summary KPIs (today)")
+
+today_df = load_parts_for(date.today().isoformat())
+if today_df is None or today_df.empty:
+    st.info("No data for today yet.")
+else:
+    df = today_df.copy()
+
+    # Define your critical steps (edit to match your simulator)
+    CRITICAL = ["mashing","boiling","fermentation"]
+
+    critical = df[df["step"].isin(CRITICAL)]
+    yield_rate = critical["in_spec"].mean() if not critical.empty else None
+
+    # Batch success: min in-spec across critical steps >= 95%
+    STEP_TARGET = 0.95
+    if not critical.empty:
+        per_batch_step = (critical.groupby(["batch_id","step"])
+                          .agg(in_spec_rate=("in_spec","mean"))
+                          .reset_index())
+        ok_by_batch = per_batch_step.groupby("batch_id")["in_spec_rate"].min()
+        batch_success_rate = (ok_by_batch >= STEP_TARGET).mean()
+    else:
+        batch_success_rate = None
+
+    # Throughput from packaging step (sum of units if you emit it there)
+    packaging = df[df["step"]=="packaging"]
+    throughput = int(packaging["value"].sum()) if not packaging.empty else 0
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Yield (critical steps)",
+              f"{(yield_rate*100):.1f}%" if yield_rate is not None else "—")
+    c2.metric("Batch Success Rate",
+              f"{(batch_success_rate*100):.1f}%" if batch_success_rate is not None else "—")
+    c3.metric("Throughput (units, today)", throughput)
+
+    st.caption("Batch considered successful if min in-spec across critical steps ≥ 95%.")    
+    
+    st.metric(
+    "OOS rate (last minute)",
+    f"{(latest_row['oos_rate']*100):.1f}%"
+    if latest_row is not None
+    else "—",
+    )
+
+    left, right = st.columns((2, 1))
+    with left:
+        st.subheader("Mean value over time")
+        if not kpi_sel.empty:
+            chart_df = kpi_sel.set_index("minute")[["mean_value"]]
+            st.line_chart(chart_df)
+        else:
+            st.info("No KPI rows yet for this filter.")
+    with right:
+        st.subheader("OOS rate over time")
+        if not kpi_sel.empty:
+            chart_df2 = kpi_sel.set_index("minute")[["oos_rate"]]
+            st.line_chart(chart_df2)
+        else:
+            st.info("No KPI rows yet for this filter.")
+
+    st.subheader("Latest raw readings")
+    tail = df_sel.sort_values("ts").tail(50)
+    cols = [
             "ts",
             "value",
             "unit",
@@ -189,5 +309,8 @@ else:
             "step",
             "sensor",
             "batch_id",
-        ]
-        st.dataframe(tail[cols], use_container_width=True, height=300)
+     ]
+    st.dataframe(tail[cols], use_container_width=True, height=300)
+
+
+
