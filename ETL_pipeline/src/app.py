@@ -57,6 +57,7 @@ st.title("🍺 Beer Production — Live KPIs")
 
 raw_df = load_raw_for_date(sel_date)
 kpi_df = load_kpi_for_date(sel_date)
+kpi_sel = pd.DataFrame()
 
 if raw_df is None or raw_df.empty:
     st.info(
@@ -67,13 +68,13 @@ else:
     # dynamic filters
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        plant = st.selectbox("Plant", sorted(raw_df["plant_id"].dropna().unique()))
+        plant = st.selectbox("Plant", sorted(raw_df["plant_id"].dropna().unique()), key="plant_live")
     with c2:
-        line = st.selectbox("Line", sorted(raw_df["line_id"].dropna().unique()))
+        line = st.selectbox("Line", sorted(raw_df["line_id"].dropna().unique()), key="line_live")
     with c3:
-        step = st.selectbox("Step", sorted(raw_df["step"].dropna().unique()))
+        step = st.selectbox("Step", sorted(raw_df["step"].dropna().unique()), key="step_live")
     with c4:
-        sensor = st.selectbox("Sensor", sorted(raw_df["sensor"].dropna().unique()))
+        sensor = st.selectbox("Sensor", sorted(raw_df["sensor"].dropna().unique()), key="sensor_live")
 
     df_sel = raw_df.query(
         "plant_id == @plant and line_id == @line and step == @step and sensor == @sensor"
@@ -203,13 +204,17 @@ else:
 
     c1, c2, c3, c4 = st.columns(4)
     with c1:
-        plant_t = st.selectbox("Plant", sorted(hist["plant_id"].dropna().unique()))
+        plant_t = st.selectbox("Plant", sorted(hist["plant_id"].dropna().unique()), key="plant_hist")
     with c2:
-        line_t = st.selectbox("Line", sorted(hist["line_id"].dropna().unique()))
+        line_t = st.selectbox("Line", sorted(hist["line_id"].dropna().unique()), key="line_hist")
     with c3:
-        step_t = st.selectbox("Step", sorted(hist["step"].dropna().unique()))
+        step_t = st.selectbox("Step", sorted(hist["step"].dropna().unique()), key="step_hist")
     with c4:
-        sensor_t = st.selectbox("Sensor", sorted(hist[hist["step"]==step_t]["sensor"].dropna().unique()))
+        sensor_t = st.selectbox(
+            "Sensor",
+            sorted(hist[hist["step"] == step_t]["sensor"].dropna().unique()),
+            key="sensor_hist",
+        )
 
     hist_sel = hist.query(
         "plant_id == @plant_t and line_id == @line_t and step == @step_t and sensor == @sensor_t"
@@ -244,6 +249,11 @@ if today_df is None or today_df.empty:
 else:
     df = today_df.copy()
 
+    df["ts"] = pd.to_datetime(df["ts"], utc=True, errors="coerce")
+    df = df.dropna(subset=["ts"])
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    df = df.dropna(subset=["value"])
+
     # Define your critical steps (edit to match your simulator)
     CRITICAL = ["mashing","boiling","fermentation"]
 
@@ -274,11 +284,20 @@ else:
 
     st.caption("Batch considered successful if min in-spec across critical steps ≥ 95%.")    
     
+    # Last-minute OOS rate across today's data.
+    df["minute"] = df["ts"].dt.floor("min")
+    minute_oos = (
+        df.groupby("minute")["in_spec"]
+        .apply(lambda x: 1 - x.mean())
+        .reset_index(name="oos_rate")
+        .sort_values("minute")
+    )
+    latest_oos = minute_oos.iloc[-1] if not minute_oos.empty else None
     st.metric(
-    "OOS rate (last minute)",
-    f"{(latest_row['oos_rate']*100):.1f}%"
-    if latest_row is not None
-    else "—",
+        "OOS rate (last minute)",
+        f"{(latest_oos['oos_rate']*100):.1f}%"
+        if latest_oos is not None
+        else "—",
     )
 
     left, right = st.columns((2, 1))
@@ -298,7 +317,7 @@ else:
             st.info("No KPI rows yet for this filter.")
 
     st.subheader("Latest raw readings")
-    tail = df_sel.sort_values("ts").tail(50)
+    tail = df.sort_values("ts").tail(50)
     cols = [
             "ts",
             "value",
@@ -311,6 +330,3 @@ else:
             "batch_id",
      ]
     st.dataframe(tail[cols], use_container_width=True, height=300)
-
-
-

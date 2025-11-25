@@ -8,3 +8,48 @@ services:
     volumes:
       - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
     restart: unless-stopped
+
+  simulator:
+    build: .
+    container_name: beer-simulator
+    command: ["python", "src/simulator.py"]
+    environment:
+      BROKER_HOST: mosquitto
+      BROKER_PORT: 1883
+      MQTT_TOPIC: factory/beer/sensors
+    depends_on:
+      - mosquitto
+
+  consumer:
+    build: .
+    container_name: beer-consumer
+    command: ["python", "src/consumer_parquet.py"]
+    environment:
+      BROKER_HOST: mosquitto
+      BROKER_PORT: 1883
+      MQTT_TOPIC: factory/beer/sensors
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - mosquitto
+
+  kpi:
+    build: .
+    container_name: beer-kpi
+    # Run every minute inside the container
+    command: ["sh", "-c", "while true; do python src/kpi_beer_minute.py; sleep 60; done"]
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - consumer
+
+  app:
+    build: .
+    container_name: beer-dashboard
+    command: ["streamlit", "run", "src/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      - consumer

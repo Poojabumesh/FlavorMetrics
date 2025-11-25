@@ -31,7 +31,8 @@ class SensorSpec:
     upper: float
 
 
-# Specs per step-sensor; adjust ranges to change variability.
+# Specs per step-sensor; adjust ranges to change variability. These serve as
+# defaults and can be overridden by summary stats from a brewery CSV.
 SPECS: Dict[Tuple[str, str], SensorSpec] = {
     ("mashing", "temp"): SensorSpec("C", mean=65.0, std=1.5, lower=62.0, upper=68.0),
     ("boiling", "temp"): SensorSpec("C", mean=99.5, std=0.8, lower=98.0, upper=101.0),
@@ -56,6 +57,40 @@ def generate_reading(step: str, sensor: str, spec: SensorSpec, ts: datetime) -> 
     }
 
 
+def load_brewery_informed_specs(csv_path: Path) -> Dict[Tuple[str, str], SensorSpec]:
+    """
+    Override default sensor specs using summary statistics from a brewery CSV.
+    The CSV is expected to have batch-level columns such as Temperature,
+    Gravity, and Volume_Produced. Missing columns fall back to defaults.
+    """
+    df = pd.read_csv(csv_path)
+    specs = dict(SPECS)
+
+    def update_from_column(
+        step: str, sensor: str, col: str, unit: str, lower_quantile: float = 0.02, upper_quantile: float = 0.98
+    ) -> None:
+        if col not in df:
+            return
+        series = df[col].dropna()
+        if series.empty:
+            return
+
+        mean = float(series.mean())
+        std = float(series.std(ddof=0))
+        if std == 0.0:
+            std = max(abs(mean) * 0.01, 0.001)
+        lower = float(series.quantile(lower_quantile))
+        upper = float(series.quantile(upper_quantile))
+        specs[(step, sensor)] = SensorSpec(unit, mean=mean, std=std, lower=lower, upper=upper)
+
+    # Map batch-level columns to step-level sensors where sensible.
+    update_from_column("fermentation", "temp", "Temperature", "C")
+    update_from_column("fermentation", "gravity", "Gravity", "SG")
+    update_from_column("packaging", "count", "Volume_Produced", "units")
+
+    return specs
+
+
 def generate_batch(
     batch_id: str,
     plant_id: str,
@@ -63,14 +98,15 @@ def generate_batch(
     start_ts: datetime,
     points_per_step: int,
     step_gap_seconds: int,
+    specs: Dict[Tuple[str, str], SensorSpec],
 ) -> List[Dict[str, object]]:
     rows: List[Dict[str, object]] = []
     current_ts = start_ts
 
     for step in STEP_ORDER:
-        specs = {k[1]: v for k, v in SPECS.items() if k[0] == step}
+        step_specs = {k[1]: v for k, v in specs.items() if k[0] == step}
         for i in range(points_per_step):
-            for sensor, spec in specs.items():
+            for sensor, spec in step_specs.items():
                 ts = current_ts + timedelta(seconds=i, milliseconds=random.randint(0, 900))
                 rows.append(
                     {
@@ -116,10 +152,18 @@ def main() -> None:
         default=600,
         help="Gap between steps to advance timestamps.",
     )
+    parser.add_argument(
+        "--brewery-csv",
+        type=Path,
+        default=None,
+        help="Optional batch-level CSV (e.g., dataset/brewery_data.csv) to derive sensor means/stds.",
+    )
     args = parser.parse_args()
 
     random.seed(args.seed)
     np.random.seed(args.seed)
+
+    specs = load_brewery_informed_specs(args.brewery_csv) if args.brewery_csv else dict(SPECS)
 
     all_rows: List[Dict[str, object]] = []
     start_ts = datetime.now(timezone.utc) - timedelta(hours=1)
@@ -134,6 +178,7 @@ def main() -> None:
             start_ts=batch_start,
             points_per_step=args.points_per_step,
             step_gap_seconds=args.step_gap_seconds,
+            specs=specs,
         )
         all_rows.extend(batch_rows)
 

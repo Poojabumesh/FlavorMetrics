@@ -7,9 +7,9 @@ import paho.mqtt.client as mqtt
 
 # ---- config ----
 ENGINE = "fastparquet"
-BROKER = "localhost"
-BROKER_PORT = 1883
-TOPIC       = "factory/beer/sensors"
+BROKER = os.getenv("BROKER_HOST", "localhost")
+BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))
+TOPIC       = os.getenv("MQTT_TOPIC", "factory/beer/sensors")
 ROOT = Path("data/raw")
 ROOT.mkdir(parents=True, exist_ok=True)
 
@@ -66,6 +66,5 @@ client.connect(BROKER, 1883, 60)
 client.subscribe(TOPIC)
 print("listening for beer telemetry …")
 client.loop_forever()
-
 
 

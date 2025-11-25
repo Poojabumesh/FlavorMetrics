@@ -1,0 +1,12 @@
+__pycache__
+*.pyc
+.venv
+build
+.dist
+.eggs
+data
+marts
+.parquet
+*.parquet
+.DS_Store
+.git

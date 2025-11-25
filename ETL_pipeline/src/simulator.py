@@ -1,11 +1,11 @@
-import json, random, time
+import json, os, random, time
 from datetime import datetime, timezone
 import paho.mqtt.client as mqtt
 
-BROKER_HOST = "localhost"
-BROKER_PORT = 1883
+BROKER_HOST = os.getenv("BROKER_HOST", "localhost")
+BROKER_PORT = int(os.getenv("BROKER_PORT", "1883"))
 
-TOPIC = "factory/beer/sensors"
+TOPIC = os.getenv("MQTT_TOPIC", "factory/beer/sensors")
 
 client = mqtt.Client()
 client.connect(BROKER_HOST, BROKER_PORT, 60)
