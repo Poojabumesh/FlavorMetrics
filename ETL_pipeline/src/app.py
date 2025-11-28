@@ -47,6 +47,11 @@ def load_kpi_for_date(d: date) -> pd.DataFrame | None:
     if not f.exists():
         return None
     df = pd.read_parquet(f, engine=ENGINE)
+    # Normalize column names so charts downstream are consistent.
+    if "avg_value" in df.columns and "mean_value" not in df.columns:
+        df["mean_value"] = df["avg_value"]
+    if "in_spec_rate" in df.columns and "oos_rate" not in df.columns:
+        df["oos_rate"] = 1 - df["in_spec_rate"]
     # minute should already be datetime, but make sure
     if "minute" in df.columns:
         df["minute"] = pd.to_datetime(df["minute"], utc=True, errors="coerce")
@@ -74,7 +79,10 @@ else:
     with c3:
         step = st.selectbox("Step", sorted(raw_df["step"].dropna().unique()), key="step_live")
     with c4:
-        sensor = st.selectbox("Sensor", sorted(raw_df["sensor"].dropna().unique()), key="sensor_live")
+        step_sensors = sorted(raw_df[raw_df["step"] == step]["sensor"].dropna().unique())
+        if not step_sensors:
+            step_sensors = sorted(raw_df["sensor"].dropna().unique())
+        sensor = st.selectbox("Sensor", step_sensors, key="sensor_live")
 
     df_sel = raw_df.query(
         "plant_id == @plant and line_id == @line and step == @step and sensor == @sensor"
@@ -125,8 +133,9 @@ else:
             kpi_sel = kpi_df.query(
                 "step == @step and sensor == @sensor"
             ).sort_values("minute")
-        else:
-            # fallback: compute per-minute KPI from this filtered raw
+
+        # fallback to ad-hoc aggregation if no precomputed KPIs for this filter
+        if kpi_df is None or kpi_df.empty or kpi_sel.empty:
             df_sel["value"] = pd.to_numeric(df_sel["value"], errors="coerce")
             df_sel = df_sel.dropna(subset=["value"])
             df_sel["minute"] = df_sel["ts"].dt.floor("min")
@@ -142,24 +151,33 @@ else:
             )
 
         latest_row = kpi_sel.iloc[-1] if not kpi_sel.empty else None
+        latest_readings = int(latest_row["readings"]) if latest_row is not None else 0
+        latest_mean = (
+            f"{latest_row['mean_value']:.2f}"
+            if latest_row is not None and "mean_value" in latest_row
+            else "—"
+        )
+        latest_oos = (
+            f"{(latest_row['oos_rate']*100):.1f}%"
+            if latest_row is not None and "oos_rate" in latest_row
+            else "—"
+        )
 
         m1, m2, m3 = st.columns(3)
         with m1:
             st.metric(
                 "Readings (last minute)",
-                int(latest_row["readings"]) if latest_row is not None else 0,
+                latest_readings,
             )
         with m2:
             st.metric(
                 "Mean value (last minute)",
-                f"{latest_row['mean_value']:.2f}" if latest_row is not None else "—",
+                latest_mean,
             )
         with m3:
             st.metric(
                 "OOS rate (last minute)",
-		f"{(latest_row['oos_rate']*100):.1f}%"
-                if latest_row is not None
-                else "—",
+                latest_oos,
             )
 
 
@@ -210,11 +228,10 @@ else:
     with c3:
         step_t = st.selectbox("Step", sorted(hist["step"].dropna().unique()), key="step_hist")
     with c4:
-        sensor_t = st.selectbox(
-            "Sensor",
-            sorted(hist[hist["step"] == step_t]["sensor"].dropna().unique()),
-            key="sensor_hist",
-        )
+        step_sensors_t = sorted(hist[hist["step"] == step_t]["sensor"].dropna().unique())
+        if not step_sensors_t:
+            step_sensors_t = sorted(hist["sensor"].dropna().unique())
+        sensor_t = st.selectbox("Sensor", step_sensors_t, key="sensor_hist")
 
     hist_sel = hist.query(
         "plant_id == @plant_t and line_id == @line_t and step == @step_t and sensor == @sensor_t"
@@ -318,7 +335,10 @@ else:
 
     st.subheader("Latest raw readings")
     tail = df.sort_values("ts").tail(50)
+    local_tz = datetime.now().astimezone().tzinfo
+    tail["ts_local"] = tail["ts"].dt.tz_convert(local_tz)
     cols = [
+            "ts_local",
             "ts",
             "value",
             "unit",
