@@ -42,6 +42,32 @@ SPECS: Dict[Tuple[str, str], SensorSpec] = {
 }
 
 STEP_ORDER = ["mashing", "boiling", "fermentation", "packaging"]
+DEFAULT_PLANTS = ("plantA", "plantB")
+DEFAULT_LINES = ("line1", "line2")
+
+# Plant-level differences: plantA has intentionally higher variance on fermentation temperature.
+PLANT_OVERRIDES: Dict[str, Dict[Tuple[str, str], SensorSpec]] = {
+    "plantA": {
+        ("fermentation", "temp"): SensorSpec(
+            "C", mean=SPECS[("fermentation", "temp")].mean, std=1.25, lower=18.0, upper=23.5
+        )
+    },
+    "plantB": {
+        ("fermentation", "temp"): SensorSpec(
+            "C", mean=SPECS[("fermentation", "temp")].mean, std=0.6, lower=18.5, upper=22.5
+        )
+    },
+}
+
+# Line-level differences: line1 represents bottling, line2 represents canning (higher throughput).
+LINE_OVERRIDES: Dict[str, Dict[Tuple[str, str], SensorSpec]] = {
+    "line1": {
+        ("packaging", "count"): SensorSpec("units", mean=100, std=7, lower=85, upper=125),
+    },
+    "line2": {
+        ("packaging", "count"): SensorSpec("units", mean=135, std=10, lower=110, upper=165),
+    },
+}
 
 
 def generate_reading(step: str, sensor: str, spec: SensorSpec, ts: datetime) -> Dict[str, object]:
@@ -91,6 +117,22 @@ def load_brewery_informed_specs(csv_path: Path) -> Dict[Tuple[str, str], SensorS
     return specs
 
 
+def build_specs_for_plant_line(
+    plant_id: str, line_id: str, base_specs: Dict[Tuple[str, str], SensorSpec] | None = None
+) -> Dict[Tuple[str, str], SensorSpec]:
+    """
+    Apply plant + line specific overrides (e.g., more variance for plantA fermentation temp,
+    higher packaging throughput for canning line2).
+    """
+    specs = dict(base_specs or SPECS)
+
+    for overrides in (PLANT_OVERRIDES.get(plant_id, {}), LINE_OVERRIDES.get(line_id, {})):
+        for key, override in overrides.items():
+            specs[key] = override
+
+    return specs
+
+
 def generate_batch(
     batch_id: str,
     plant_id: str,
@@ -100,6 +142,7 @@ def generate_batch(
     step_gap_seconds: int,
     specs: Dict[Tuple[str, str], SensorSpec],
 ) -> List[Dict[str, object]]:
+    """Generate one batch worth of readings for a specific plant/line using resolved specs."""
     rows: List[Dict[str, object]] = []
     current_ts = start_ts
 
@@ -143,8 +186,20 @@ def main() -> None:
     parser.add_argument(
         "--output-root", type=Path, default=Path("data/raw"), help="Raw data root (partitioned by date=...)."
     )
-    parser.add_argument("--plant-id", type=str, default="plantA")
-    parser.add_argument("--line-id", type=str, default="line1")
+    parser.add_argument(
+        "--plant-ids",
+        nargs="+",
+        default=list(DEFAULT_PLANTS),
+        help="Plants to generate (e.g., plantA plantB).",
+    )
+    parser.add_argument(
+        "--line-ids",
+        nargs="+",
+        default=list(DEFAULT_LINES),
+        help="Lines to generate per plant (e.g., line1 line2).",
+    )
+    parser.add_argument("--plant-id", type=str, default=None, help="Deprecated: use --plant-ids.")
+    parser.add_argument("--line-id", type=str, default=None, help="Deprecated: use --line-ids.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument(
         "--step-gap-seconds",
@@ -163,27 +218,38 @@ def main() -> None:
     random.seed(args.seed)
     np.random.seed(args.seed)
 
-    specs = load_brewery_informed_specs(args.brewery_csv) if args.brewery_csv else dict(SPECS)
+    base_specs = load_brewery_informed_specs(args.brewery_csv) if args.brewery_csv else dict(SPECS)
+
+    plant_ids = args.plant_ids or list(DEFAULT_PLANTS)
+    line_ids = args.line_ids or list(DEFAULT_LINES)
+    if args.plant_id:
+        plant_ids = [args.plant_id]
+    if args.line_id:
+        line_ids = [args.line_id]
 
     all_rows: List[Dict[str, object]] = []
     start_ts = datetime.now(timezone.utc) - timedelta(hours=1)
 
-    for b in range(args.batches):
-        batch_start = start_ts + timedelta(minutes=b * 15)
-        batch_id = f"batch-synth-{int(batch_start.timestamp())}"
-        batch_rows = generate_batch(
-            batch_id=batch_id,
-            plant_id=args.plant_id,
-            line_id=args.line_id,
-            start_ts=batch_start,
-            points_per_step=args.points_per_step,
-            step_gap_seconds=args.step_gap_seconds,
-            specs=specs,
-        )
-        all_rows.extend(batch_rows)
+    for plant_id in plant_ids:
+        for line_id in line_ids:
+            combo_specs = build_specs_for_plant_line(plant_id, line_id, base_specs)
+            for b in range(args.batches):
+                batch_start = start_ts + timedelta(minutes=b * 15)
+                batch_id = f"batch-synth-{plant_id}-{line_id}-{int(batch_start.timestamp())}"
+                batch_rows = generate_batch(
+                    batch_id=batch_id,
+                    plant_id=plant_id,
+                    line_id=line_id,
+                    start_ts=batch_start,
+                    points_per_step=args.points_per_step,
+                    step_gap_seconds=args.step_gap_seconds,
+                    specs=combo_specs,
+                )
+                all_rows.extend(batch_rows)
 
     path = write_parquet(all_rows, args.output_root)
-    print(f"Wrote {len(all_rows)} rows across {args.batches} batches to {path}")
+    total_batches = args.batches * len(plant_ids) * len(line_ids)
+    print(f"Wrote {len(all_rows)} rows across {total_batches} batches to {path}")
 
 
 if __name__ == "__main__":
