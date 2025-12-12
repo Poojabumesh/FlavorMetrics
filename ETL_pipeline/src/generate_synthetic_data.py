@@ -141,13 +141,29 @@ def generate_batch(
     points_per_step: int,
     step_gap_seconds: int,
     specs: Dict[Tuple[str, str], SensorSpec],
+    mean_jitter_pct: float = 0.0,
+    std_mult: float = 1.0,
 ) -> List[Dict[str, object]]:
     """Generate one batch worth of readings for a specific plant/line using resolved specs."""
     rows: List[Dict[str, object]] = []
     current_ts = start_ts
+    # Introduce batch-level noise to help avoid overfitting on perfectly clean data.
+    batch_specs: Dict[Tuple[str, str], SensorSpec] = {}
+    for key, spec in specs.items():
+        if mean_jitter_pct > 0:
+            jitter = random.gauss(0, abs(spec.mean) * mean_jitter_pct)
+        else:
+            jitter = 0.0
+        batch_specs[key] = SensorSpec(
+            spec.unit,
+            mean=spec.mean + jitter,
+            std=spec.std * std_mult,
+            lower=spec.lower,
+            upper=spec.upper,
+        )
 
     for step in STEP_ORDER:
-        step_specs = {k[1]: v for k, v in specs.items() if k[0] == step}
+        step_specs = {k[1]: v for k, v in batch_specs.items() if k[0] == step}
         for i in range(points_per_step):
             for sensor, spec in step_specs.items():
                 ts = current_ts + timedelta(seconds=i, milliseconds=random.randint(0, 900))
@@ -200,6 +216,18 @@ def main() -> None:
     )
     parser.add_argument("--plant-id", type=str, default=None, help="Deprecated: use --plant-ids.")
     parser.add_argument("--line-id", type=str, default=None, help="Deprecated: use --line-ids.")
+    parser.add_argument(
+        "--mean-jitter-pct",
+        type=float,
+        default=0.03,
+        help="Per-batch Gaussian jitter applied to sensor means (as a fraction, e.g., 0.03 = 3%).",
+    )
+    parser.add_argument(
+        "--std-mult",
+        type=float,
+        default=1.0,
+        help="Multiplier applied to sensor std dev to add measurement noise.",
+    )
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument(
         "--step-gap-seconds",
@@ -244,6 +272,8 @@ def main() -> None:
                     points_per_step=args.points_per_step,
                     step_gap_seconds=args.step_gap_seconds,
                     specs=combo_specs,
+                    mean_jitter_pct=args.mean_jitter_pct,
+                    std_mult=args.std_mult,
                 )
                 all_rows.extend(batch_rows)
 
