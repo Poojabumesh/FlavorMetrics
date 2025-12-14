@@ -4,6 +4,7 @@ from pathlib import Path
 from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 import streamlit as st
+import altair as alt
 from streamlit_autorefresh import st_autorefresh
 
 # Prediction helpers
@@ -18,7 +19,101 @@ MART_ROOT = Path("data/marts")
 ENGINE = "fastparquet"
 RAW_ROOT.mkdir(parents=True, exist_ok=True)
 
+# Spec limits to visualize boundaries on charts (aligned with consumer).
+SPECS_LIMITS = {
+    ("mashing", "temp"): (62, 68),
+    ("boiling", "temp"): (98, 101),
+    ("fermentation", "temp"): (18, 22),
+    ("fermentation", "gravity"): (1.010, 1.030),
+    ("packaging", "count"): (80, 120),
+}
+
 st.set_page_config(page_title="Beer Production KPIs", layout="wide")
+
+# --- custom styling (sky blue + pastel palette) ---
+PALETTE = {
+    "sky": "#4CB5F5",
+    "mint": "#A3E4D7",
+    "peach": "#FFC97B",
+    "lavender": "#C7A4FF",
+    "ink": "#0B1224",
+    "deep_blue": "#0B3C5D",
+}
+
+st.markdown(
+    f"""
+    <style>
+        /* Background + container */
+        div[data-testid="stAppViewContainer"] {{
+            background: radial-gradient(circle at 10% 20%, {PALETTE["mint"]} 0%, #d6f5ff 25%, #b8e4ff 60%);
+            color: {PALETTE["ink"]};
+        }}
+        div.block-container {{
+            padding-top: 1.5rem;
+            padding-bottom: 2rem;
+        }}
+        /* Sidebar */
+        section[data-testid="stSidebar"] {{
+            background: linear-gradient(180deg, {PALETTE["sky"]} 0%, {PALETTE["lavender"]} 100%);
+            color: {PALETTE["ink"]};
+        }}
+        section[data-testid="stSidebar"] .stSelectbox > label,
+        section[data-testid="stSidebar"] .stRadio > label {{
+            color: {PALETTE["ink"]};
+        }}
+        /* Metrics + cards */
+        div[data-testid="stMetric"] {{
+            background: linear-gradient(145deg, {PALETTE["sky"]}, {PALETTE["peach"]});
+            color: {PALETTE["ink"]};
+            border: 1px solid rgba(0,0,0,0.05);
+            border-radius: 14px;
+            padding: 12px;
+            box-shadow: 0 12px 24px rgba(12, 60, 93, 0.25);
+        }}
+        /* Dataframes */
+        div[data-testid="stDataFrame"] table thead tr th {{
+            background: {PALETTE["deep_blue"]} !important;
+            color: #F6FAFF !important;
+        }}
+        div[data-testid="stDataFrame"] table tbody tr:nth-child(even) {{
+            background: rgba(255,255,255,0.08) !important;
+        }}
+        div[data-testid="stDataFrame"] table tbody tr:nth-child(odd) {{
+            background: rgba(255,255,255,0.14) !important;
+        }}
+        /* Headers */
+        h1, h2, h3 {{
+            color: {PALETTE["ink"]};
+        }}
+        .stAlert {{
+            border-radius: 12px;
+        }}
+        /* Charts */
+        div[data-testid="stVegaLiteChart"] canvas {{
+            background: linear-gradient(135deg, #ecf7ff, #f7ecff) !important;
+            border-radius: 12px;
+        }}
+        div[data-testid="stAltairChart"] canvas {{
+            background: linear-gradient(135deg, #ecf7ff, #f7ecff) !important;
+            border-radius: 12px;
+        }}
+        div[data-testid="stPlotlyChart"] {{
+            background: linear-gradient(135deg, #ecf7ff, #f7ecff) !important;
+            border-radius: 12px;
+        }}
+        /* Buttons */
+        button[kind="secondary"] {{
+            background: linear-gradient(135deg, {PALETTE["sky"]}, {PALETTE["lavender"]});
+            color: {PALETTE["ink"]} !important;
+            border: none;
+        }}
+        button[kind="secondary"]:hover {{
+            filter: brightness(1.05);
+        }}
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 # --- sidebar controls ---
 st.sidebar.title("Filters")
@@ -64,6 +159,52 @@ def load_kpi_for_date(d: date) -> pd.DataFrame | None:
     if "minute" in df.columns:
         df["minute"] = pd.to_datetime(df["minute"], utc=True, errors="coerce")
     return df
+
+
+def mean_chart_with_limits(df: pd.DataFrame, step: str, sensor: str, title: str) -> None:
+    """Render mean value line with spec limit rules if known."""
+    if df.empty or "minute" not in df.columns or "mean_value" not in df.columns:
+        st.info("No KPI rows yet for this filter.")
+        return
+
+    chart_df = df[["minute", "mean_value"]].dropna()
+    if chart_df.empty:
+        st.info("No KPI rows yet for this filter.")
+        return
+
+    base = (
+        alt.Chart(chart_df)
+        .mark_line(color=PALETTE["deep_blue"], strokeWidth=2)
+        .encode(
+            x=alt.X("minute:T", title="Time"),
+            y=alt.Y("mean_value:Q", title="Mean value"),
+            tooltip=[
+                alt.Tooltip("minute:T", title="Time"),
+                alt.Tooltip("mean_value:Q", title="Mean"),
+            ],
+        )
+    )
+
+    overlays = []
+    key = (step, sensor)
+    if key in SPECS_LIMITS:
+        low, high = SPECS_LIMITS[key]
+        limits_df = pd.DataFrame({"value": [low, high], "Limit": ["Lower", "Upper"]})
+        band_df = pd.DataFrame({"low": [low], "high": [high]})
+        band = (
+            alt.Chart(band_df)
+            .mark_rect(opacity=0.18, color=PALETTE["mint"])
+            .encode(y="low:Q", y2="high:Q")
+        )
+        rules = (
+            alt.Chart(limits_df)
+            .mark_rule(strokeDash=[6, 4], color=PALETTE["peach"])
+            .encode(y="value:Q", tooltip=["Limit:N", "value:Q"])
+        )
+        overlays.extend([band, rules])
+
+    chart = alt.layer(*(overlays + [base])).interactive()
+    st.altair_chart(chart, use_container_width=True)
 
 # --- main ---
 st.title("🍺 Beer Production — Live KPIs")
@@ -329,11 +470,7 @@ if page == "Overview":
         left, right = st.columns((2, 1))
         with left:
             st.subheader("Mean value over time")
-            if not kpi_sel.empty:
-                chart_df = kpi_sel.set_index("minute")[["mean_value"]]
-                st.line_chart(chart_df)
-            else:
-                st.info("No KPI rows yet for this filter.")
+            mean_chart_with_limits(kpi_sel, step, sensor, "Mean value over time")
         with right:
             st.subheader("OOS rate over time")
             if not kpi_sel.empty:
