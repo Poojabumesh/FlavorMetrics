@@ -37,8 +37,15 @@ SPECS: Dict[Tuple[str, str], SensorSpec] = {
     ("mashing", "temp"): SensorSpec("C", mean=65.0, std=1.5, lower=62.0, upper=68.0),
     ("boiling", "temp"): SensorSpec("C", mean=99.5, std=0.8, lower=98.0, upper=101.0),
     ("fermentation", "temp"): SensorSpec("C", mean=20.0, std=0.8, lower=18.0, upper=23.0),
+    ("fermentation", "ph"): SensorSpec("pH", mean=4.2, std=0.15, lower=3.8, upper=4.6),
+    ("fermentation", "gravity_degP"): SensorSpec("degP", mean=12.0, std=0.6, lower=10.0, upper=13.5),
+    ("fermentation", "co2_pressure"): SensorSpec("bar", mean=0.9, std=0.08, lower=0.6, upper=1.2),
     ("fermentation", "gravity"): SensorSpec("SG", mean=1.014, std=0.004, lower=1.006, upper=1.020),
     ("packaging", "count"): SensorSpec("units", mean=105, std=6, lower=90, upper=120),
+    ("packaging", "fill_level"): SensorSpec("ml", mean=335.0, std=4.0, lower=330.0, upper=340.0),
+    ("packaging", "cap_torque"): SensorSpec("Ncm", mean=16.0, std=1.8, lower=12.0, upper=20.0),
+    ("packaging", "line_speed"): SensorSpec("units/min", mean=120.0, std=8.0, lower=90.0, upper=150.0),
+    ("packaging", "reject_rate"): SensorSpec("%", mean=1.5, std=0.6, lower=0.0, upper=4.0),
 }
 
 STEP_ORDER = ["mashing", "boiling", "fermentation", "packaging"]

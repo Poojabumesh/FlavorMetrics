@@ -19,8 +19,14 @@ SPECS = {
     ("mashing", "temp"): (62, 68),
     ("boiling", "temp"): (98, 101),
     ("fermentation", "temp"): (18, 22),
-    ("fermentation", "gravity"): (1.010, 1.030),
+    ("fermentation", "ph"): (3.8, 4.6),
+    ("fermentation", "gravity_degP"): (10.0, 13.5),
+    ("fermentation", "co2_pressure"): (0.6, 1.2),
     ("packaging", "count"): (80, 120),
+    ("packaging", "fill_level"): (330, 340),
+    ("packaging", "cap_torque"): (12, 20),
+    ("packaging", "line_speed"): (90, 150),
+    ("packaging", "reject_rate"): (0.0, 4.0),
 }
 
 
@@ -66,5 +72,4 @@ client.connect(BROKER, 1883, 60)
 client.subscribe(TOPIC)
 print("listening for beer telemetry …")
 client.loop_forever()
-
 

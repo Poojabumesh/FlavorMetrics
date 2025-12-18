@@ -46,7 +46,8 @@ def load_step_stats(data_root: Path, max_files: int | None) -> pd.DataFrame:
     """Read Parquet files and compute per-step, per-sensor aggregates."""
     files = sorted(data_root.glob("date=*/beer-*.parquet"))
     if max_files:
-        files = files[:max_files]
+        # Use the most recent files so we don't train on stale history.
+        files = files[-max_files:]
     if not files:
         raise FileNotFoundError(f"No parquet files found under {data_root}")
 

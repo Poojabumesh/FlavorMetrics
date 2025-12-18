@@ -16,16 +16,26 @@ from predict_next_step import (
 
 RAW_ROOT = Path("data/raw")
 MART_ROOT = Path("data/marts")
+PREDICTIONS_ROOT = MART_ROOT / "predictions"
 ENGINE = "fastparquet"
 RAW_ROOT.mkdir(parents=True, exist_ok=True)
+MART_ROOT.mkdir(parents=True, exist_ok=True)
+PREDICTIONS_ROOT.mkdir(parents=True, exist_ok=True)
 
 # Spec limits to visualize boundaries on charts (aligned with consumer).
 SPECS_LIMITS = {
     ("mashing", "temp"): (62, 68),
     ("boiling", "temp"): (98, 101),
     ("fermentation", "temp"): (18, 22),
+    ("fermentation", "ph"): (3.8, 4.6),
+    ("fermentation", "gravity_degP"): (10.0, 13.5),
+    ("fermentation", "co2_pressure"): (0.6, 1.2),
     ("fermentation", "gravity"): (1.010, 1.030),
     ("packaging", "count"): (80, 120),
+    ("packaging", "fill_level"): (330, 340),
+    ("packaging", "cap_torque"): (12, 20),
+    ("packaging", "line_speed"): (90, 150),
+    ("packaging", "reject_rate"): (0.0, 4.0),
 }
 
 st.set_page_config(page_title="Beer Production KPIs", layout="wide")
@@ -501,7 +511,8 @@ elif page == "Predictions":
     st.header("🔮 Next-Step Predictions")
     data_root = RAW_ROOT
     try:
-        step_stats = load_step_stats(data_root, max_files=600)
+        # Use full history so we include older batches; adjust max_files here if needed.
+        step_stats = load_step_stats(data_root, max_files=None)
     except FileNotFoundError:
         st.error(f"No Parquet files found under {data_root}.")
         st.stop()
@@ -531,7 +542,7 @@ elif page == "Predictions":
     for target, score in report["mae_by_target"].items():
         st.write(f"MAE {target}: {score:.4f}")
 
-    # Compare predicted vs. actual for last 5 rows of this transition
+    # Compare predicted vs. actual for a recent window of rows
     subset = transitions_df[transitions_df["transition"] == transition].copy()
     target_cols = [c for c in subset.columns if c.startswith("target_") and subset[c].notna().any()]
     feature_cols = [c for c in subset.columns if c not in target_cols and c not in {"plant_id","line_id","batch_id","current_step","next_step","transition"}]
@@ -539,20 +550,48 @@ elif page == "Predictions":
     subset = subset.dropna(subset=target_cols)
     feature_medians = subset[feature_cols].median()
     subset[feature_cols] = subset[feature_cols].fillna(feature_medians)
-    tail = subset.tail(5).copy()
+    window_size = 10
+    tail = subset.tail(window_size).copy()
     preds = report["model"].predict(tail[feature_cols])
 
     for i, col in enumerate(target_cols):
         tail[f"pred_{col}"] = preds[:, i]
 
-    st.subheader("Last 5 predictions vs actual")
-    show_cols = ["batch_id", "current_step", "next_step"] + target_cols + [f"pred_{c}" for c in target_cols]
-    st.dataframe(tail[show_cols], use_container_width=True, height=300)
+    # Persist the latest prediction window to Parquet so we have a record on disk.
+    outpath = None
+    if not tail.empty:
+        ts_str = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        safe_transition = transition.replace("->", "_")
+        outpath = PREDICTIONS_ROOT / f"preds_{safe_transition}_{ts_str}.parquet"
+        tail_to_save = tail.copy()
+        tail_to_save["saved_at_utc"] = datetime.utcnow()
+        tail_to_save["transition"] = transition
+        tail_to_save.to_parquet(outpath, engine=ENGINE, index=False)
 
-    st.subheader("Prediction vs actual over last 5")
+    st.subheader(f"Last {window_size} predictions vs ground truth")
+    show_cols = ["batch_id", "current_step", "next_step"] + target_cols + [f"pred_{c}" for c in target_cols]
+    st.dataframe(tail[show_cols], use_container_width=True, height=320)
+    if outpath:
+        st.caption(f"Saved snapshot to `{outpath}`")
+
+    st.subheader(f"Prediction vs ground truth over last {window_size}")
     for col in target_cols:
-        chart_df = tail[["batch_id", col, f"pred_{col}"]].set_index("batch_id")
-        st.line_chart(chart_df)
+        chart_df = tail[["batch_id", col, f"pred_{col}"]].copy()
+        melted = chart_df.melt(id_vars="batch_id", var_name="series", value_name="value")
+        if melted.empty:
+            st.info(f"No values available for {col}.")
+            continue
+        chart = (
+            alt.Chart(melted)
+            .mark_line(point=True)
+            .encode(
+                x=alt.X("batch_id:N", title="Batch"),
+                y=alt.Y("value:Q", title=col),
+                color=alt.Color("series:N", title="Series"),
+                tooltip=["batch_id", "series", alt.Tooltip("value:Q", format=".3f")],
+            )
+        )
+        st.altair_chart(chart, use_container_width=True)
 else:
     st.info(
         f"No raw parts found in {RAW_ROOT}/date={sel_date.isoformat()}/ yet. "
