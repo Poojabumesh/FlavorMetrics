@@ -128,6 +128,23 @@ st.markdown(
             padding: 12px 14px;
             box-shadow: 0 6px 16px rgba(0,0,0,0.08);
         }}
+        .qa-card.compact {{
+            padding: 10px 12px;
+            border-radius: 10px;
+            margin-bottom: 10px;
+        }}
+        .metric-block {{
+            min-height: 180px;
+            display: flex;
+            align-items: stretch;
+        }}
+        .metric-block .qa-card {{
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            margin: 0;
+        }}
         .qa-title {{
             font-size: 0.9rem;
             color: #4a5568;
@@ -139,10 +156,13 @@ st.markdown(
             color: #1f2937;
             font-weight: 700;
         }}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+        .qa-card.compact .qa-value {{
+            font-size: 1.4rem;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 # --- sidebar controls ---
 st.sidebar.title("Filters")
@@ -668,12 +688,27 @@ elif page == "Testing":
             "quality_metric_df": pd.DataFrame({"month": months, "quality_pct": quality_metric}),
         }
 
-    def render_card(col, title: str, value: str):
+    def render_card(col, title: str, value: str, compact: bool = False):
+        class_name = "qa-card compact" if compact else "qa-card"
         col.markdown(
             f"""
-            <div class="qa-card">
+            <div class="{class_name}">
                 <div class="qa-title">{title}</div>
                 <div class="qa-value">{value}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    def render_metric_block(col, title: str, value: str):
+        col.subheader(title)
+        col.markdown(
+            f"""
+            <div class="metric-block">
+                <div class="qa-card compact">
+                    <div class="qa-title">{title}</div>
+                    <div class="qa-value">{value}</div>
+                </div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -717,7 +752,9 @@ elif page == "Testing":
     render_card(top[5], "Downtime minutes", summary["downtime_minutes"])
 
     st.markdown(" ")
-    row1_col1, row1_col2, row1_col3 = st.columns(3)
+    metric_col1, metric_col2 = st.columns(2)
+    render_metric_block(metric_col1, "Quality Overtime", f"{summary['quality_overtime']}%")
+    render_metric_block(metric_col2, "Equipment Availability", f"{summary['equipment_availability']}%")
 
     chart_defect = (
         alt.Chart(data_demo["defect_rate_df"])
@@ -727,9 +764,8 @@ elif page == "Testing":
             y=alt.Y("defect_rate:Q", title="Defect rate (%)"),
             tooltip=["month", alt.Tooltip("defect_rate:Q", format=".1f")],
         )
+        .properties(height=320)
     )
-    row1_col1.subheader("Defect Rate Over Time")
-    row1_col1.altair_chart(chart_defect, use_container_width=True)
 
     counts_long = data_demo["counts_df"].melt("month", var_name="type", value_name="count")
     chart_counts = (
@@ -741,9 +777,8 @@ elif page == "Testing":
             color=alt.Color("type:N", scale=alt.Scale(range=["#f4b000", "#4c5565", "#a0616a"])),
             tooltip=["month", "type", "count"],
         )
+        .properties(height=320)
     )
-    row1_col2.subheader("Defect, Rework and Scrap Counts by Month")
-    row1_col2.altair_chart(chart_counts, use_container_width=True)
 
     chart_downtime = (
         # Pre-melt to avoid Altair dtype inference errors on transform-generated fields
@@ -752,17 +787,11 @@ elif page == "Testing":
         .encode(
             x=alt.X("month:N", sort=None),
             y=alt.Y("value:Q", title="Minutes / Units"),
-            color=alt.Color("series:N", title="Series", scale=alt.Scale(range=["#f4b000", "#4c5565"])),
+            color=alt.Color("series:N", legend=None, scale=alt.Scale(range=["#f4b000", "#4c5565"])),
             tooltip=["month", "series", alt.Tooltip("value:Q", format=".1f")],
         )
+        .properties(height=320)
     )
-    row1_col3.subheader("Downtime Impact on Production")
-    row1_col3.altair_chart(chart_downtime, use_container_width=True)
-
-    st.markdown(" ")
-    row2_col1, row2_col2, row2_col3, row2_col4 = st.columns(4)
-    row2_col1.subheader("Quality Overtime")
-    row2_col1.altair_chart(gauge_chart(summary["quality_overtime"], "", color="#f4b000"), use_container_width=True)
 
     prod_long = data_demo["production_df"].melt("month", var_name="type", value_name="units")
     chart_prod = (
@@ -774,9 +803,8 @@ elif page == "Testing":
             color=alt.Color("type:N", scale=alt.Scale(range=["#f4b000", "#4c5565"]), title=""),
             tooltip=["month", "type", "units"],
         )
+        .properties(height=320)
     )
-    row2_col2.subheader("Monthly Production vs Good Production")
-    row2_col2.altair_chart(chart_prod, use_container_width=True)
 
     chart_quality = (
         alt.Chart(data_demo["quality_metric_df"])
@@ -786,12 +814,31 @@ elif page == "Testing":
             y=alt.Y("quality_pct:Q", title="Quality (%)"),
             tooltip=["month", alt.Tooltip("quality_pct:Q", format=".1f")],
         )
+        .properties(height=320)
     )
-    row2_col3.subheader("Quality Metric Over Time")
-    row2_col3.altair_chart(chart_quality, use_container_width=True)
 
-    row2_col4.subheader("Equipment Availability")
-    row2_col4.altair_chart(gauge_chart(summary["equipment_availability"], "", color="#f4b000"), use_container_width=True)
+    st.markdown(" ")
+    bars_row_left, bars_row_right = st.columns(2)
+    bars_row_left.subheader("Defect, Rework and Scrap Counts by Month")
+    bars_row_left.altair_chart(chart_counts, use_container_width=True)
+    bars_row_right.subheader("Monthly Production vs Good Production")
+    bars_row_right.altair_chart(chart_prod, use_container_width=True)
+
+    st.markdown(" ")
+    row_other_col1, row_other_col2, row_other_col3 = st.columns(3)
+    row_other_col1.subheader("Defect Rate Over Time")
+    row_other_col1.altair_chart(chart_defect, use_container_width=True)
+
+    row_other_col2.subheader("Downtime Impact on Production")
+    row_other_col2.altair_chart(chart_downtime, use_container_width=True)
+    row_other_col2.markdown(
+        '<span style="color:#f4b000;">downtime_minutes</span> • '
+        '<span style="color:#4c5565;">total_produced</span>',
+        unsafe_allow_html=True,
+    )
+
+    row_other_col3.subheader("Quality Metric Over Time")
+    row_other_col3.altair_chart(chart_quality, use_container_width=True)
 else:
     st.info(
         f"No raw parts found in {RAW_ROOT}/date={sel_date.isoformat()}/ yet. "
