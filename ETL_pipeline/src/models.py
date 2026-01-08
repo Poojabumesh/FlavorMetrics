@@ -1,18 +1,26 @@
 """
-Utility helpers for fitting a simple Linear Regression model and making predictions.
+Utility helpers for fitting a simple Linear Regression model, checking multicollinearity,
+and making predictions.
 
 Example:
     from pathlib import Path
     import pandas as pd
-    from models import train_linear_regression, predict_linear_regression
+    from models import (
+        train_linear_regression,
+        predict_linear_regression,
+        compute_vif,
+        reduce_multicollinearity,
+    )
 
     df = pd.read_parquet("data/marts/beer_kpi_date=2025-12-23.parquet")
+    vif = compute_vif(df, feature_cols=["mean_value", "oos_rate"])
+    kept, dropped = reduce_multicollinearity(df, feature_cols=["mean_value", "oos_rate"], vif_threshold=5.0)
     model, metrics = train_linear_regression(df, target_col="oos_rate", feature_cols=["mean_value"])
     preds = predict_linear_regression(model, df[["mean_value"]])
 """
 from __future__ import annotations
 
-from typing import Iterable, Tuple
+from typing import Iterable, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -54,6 +62,56 @@ def train_linear_regression(
         "n_test": len(y_test),
     }
     return model, metrics
+
+
+def compute_vif(df: pd.DataFrame, feature_cols: Iterable[str]) -> pd.DataFrame:
+    """
+    Compute Variance Inflation Factor (VIF) for each feature to diagnose multicollinearity.
+
+    VIF = 1 / (1 - R^2) where R^2 is from regressing one feature on all the others.
+    """
+    features: List[str] = list(feature_cols)
+    rows = []
+
+    for i, col in enumerate(features):
+        other = features[:i] + features[i + 1 :]
+        if not other:
+            rows.append({"feature": col, "vif": 1.0, "r2": 0.0})
+            continue
+
+        X = _to_matrix(df, other)
+        y = df[col].to_numpy()
+        reg = LinearRegression()
+        reg.fit(X, y)
+        r2 = reg.score(X, y)
+        vif = 1.0 / max(1e-6, (1.0 - r2))
+        rows.append({"feature": col, "vif": vif, "r2": r2})
+
+    return pd.DataFrame(rows).sort_values("vif", ascending=False).reset_index(drop=True)
+
+
+def reduce_multicollinearity(
+    df: pd.DataFrame,
+    feature_cols: Iterable[str],
+    vif_threshold: float = 5.0,
+) -> Tuple[List[str], List[str]]:
+    """
+    Iteratively drop the feature with the highest VIF until all remaining features are below the threshold.
+
+    Returns (kept_features, dropped_features).
+    """
+    keep = list(feature_cols)
+    dropped: List[str] = []
+
+    while len(keep) > 1:
+        vif_df = compute_vif(df, keep)
+        max_vif = vif_df.iloc[0]
+        if max_vif["vif"] <= vif_threshold:
+            break
+        dropped.append(max_vif["feature"])
+        keep.remove(max_vif["feature"])
+
+    return keep, dropped
 
 
 def predict_linear_regression(model: LinearRegression, features: pd.DataFrame | np.ndarray) -> np.ndarray:
